@@ -1,0 +1,37 @@
+-- ============================================================================
+-- 00_setup.sql  -  run once as ACCOUNTADMIN.   STATUS: NOT EXECUTED (no account available) [UNVERIFIED]
+--
+-- Principle: least privilege + separation of compute.
+--   GTFSR_LOADER   writes RAW         (used by Airflow)
+--   GTFSR_ANALYST  reads ANALYTICS    (used by the dashboard / BI)
+-- Two warehouses so a heavy dashboard query never slows a load, and each is billed separately.
+-- ============================================================================
+USE ROLE ACCOUNTADMIN;
+
+CREATE ROLE IF NOT EXISTS GTFSR_LOADER;
+CREATE ROLE IF NOT EXISTS GTFSR_ANALYST;
+
+-- XSMALL + 60s auto-suspend: this workload is tiny; idle compute should cost nothing.
+CREATE WAREHOUSE IF NOT EXISTS GTFSR_LOAD_WH
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+CREATE WAREHOUSE IF NOT EXISTS GTFSR_BI_WH
+  WAREHOUSE_SIZE = XSMALL AUTO_SUSPEND = 60 AUTO_RESUME = TRUE INITIALLY_SUSPENDED = TRUE;
+
+CREATE DATABASE IF NOT EXISTS GTFSR;
+CREATE SCHEMA IF NOT EXISTS GTFSR.RAW;         -- landing: typed copies of the serving Parquet
+CREATE SCHEMA IF NOT EXISTS GTFSR.ANALYTICS;   -- views/marts consumers are allowed to touch
+
+GRANT USAGE ON WAREHOUSE GTFSR_LOAD_WH TO ROLE GTFSR_LOADER;
+GRANT USAGE ON WAREHOUSE GTFSR_BI_WH   TO ROLE GTFSR_ANALYST;
+
+GRANT USAGE ON DATABASE GTFSR TO ROLE GTFSR_LOADER;
+GRANT USAGE ON DATABASE GTFSR TO ROLE GTFSR_ANALYST;
+GRANT ALL ON SCHEMA GTFSR.RAW TO ROLE GTFSR_LOADER;
+GRANT CREATE VIEW ON SCHEMA GTFSR.ANALYTICS TO ROLE GTFSR_LOADER;   -- loader publishes the views
+GRANT USAGE ON SCHEMA GTFSR.ANALYTICS TO ROLE GTFSR_ANALYST;
+GRANT SELECT ON ALL VIEWS IN SCHEMA GTFSR.ANALYTICS TO ROLE GTFSR_ANALYST;
+GRANT SELECT ON FUTURE VIEWS IN SCHEMA GTFSR.ANALYTICS TO ROLE GTFSR_ANALYST;
+
+-- Service user for Airflow. Use KEY-PAIR auth in practice; never commit credentials.
+-- CREATE USER AIRFLOW_SVC DEFAULT_ROLE = GTFSR_LOADER DEFAULT_WAREHOUSE = GTFSR_LOAD_WH RSA_PUBLIC_KEY = '<public key>';
+-- GRANT ROLE GTFSR_LOADER TO USER AIRFLOW_SVC;

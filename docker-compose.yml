@@ -1,0 +1,122 @@
+# Local platform:  Kafka (KRaft)  +  moto (AWS emulator)  +  Spark streaming jobs.
+#   docker compose up -d kafka kafka-init aws-emulator aws-init      # infrastructure
+#   docker compose --profile streaming up -d                     # the 4 Spark queries
+name: gtfsr
+
+x-spark-job: &spark-job
+  build: ./docker/spark
+  depends_on:
+    kafka-init: { condition: service_completed_successfully }
+    aws-init: { condition: service_completed_successfully }
+  environment: &spark-env
+    KAFKA_BOOTSTRAP_SERVERS: kafka:19092      # INTERNAL listener: reachable from other containers
+    S3_ENDPOINT_URL: http://aws-emulator:5000
+    S3_BUCKET: gtfsr-lake
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    AWS_REGION: eu-west-1
+    PYTHONPATH: /app/src
+    ALERT_ON_SECONDS: ${ALERT_ON_SECONDS:-300}
+    ALERT_OFF_SECONDS: ${ALERT_OFF_SECONDS:-120}
+    ALERT_ESCALATION_SECONDS: ${ALERT_ESCALATION_SECONDS:-600,900}
+    ALERT_CONSECUTIVE_OBSERVATIONS: ${ALERT_CONSECUTIVE_OBSERVATIONS:-2}
+    STARTING_OFFSETS: ${STARTING_OFFSETS:-earliest}
+  volumes:
+    - ./src:/app/src:ro
+    - ./scripts:/app/scripts:ro
+    - ./tests:/app/tests:ro
+    - ./glue:/app/glue:ro
+    - ivy-cache:/tmp/ivy                      # keep downloaded jars between runs
+  profiles: ["streaming"]
+  restart: unless-stopped
+
+services:
+  # ---------------------------------------------------------------- Kafka
+  kafka:
+    image: apache/kafka:3.8.0
+    ports: ["9092:9092"]
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: INTERNAL://:19092,EXTERNAL://:9092,CONTROLLER://:9093
+      # Clients are told to reconnect to these addresses -> must be reachable FROM the client.
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:19092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # Single node => RF 1. (Production: 3 brokers, RF 3, min.insync.replicas 2.)
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+    volumes: ["kafka-data:/var/lib/kafka/data"]
+
+  kafka-init:
+    image: apache/kafka:3.8.0
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        B=kafka:19092; T=/opt/kafka/bin/kafka-topics.sh
+        # 6 partitions: ordering is per-partition, parallelism is per-partition.
+        $$T --bootstrap-server $$B --create --if-not-exists --topic gtfsr.trip_updates       --partitions 6 --replication-factor 1 --config retention.ms=86400000
+        $$T --bootstrap-server $$B --create --if-not-exists --topic gtfsr.vehicle_positions  --partitions 6 --replication-factor 1 --config retention.ms=86400000
+        # alerts are low-volume but valuable: fewer partitions, longer retention (7d)
+        $$T --bootstrap-server $$B --create --if-not-exists --topic gtfsr.delay_alerts       --partitions 3 --replication-factor 1 --config retention.ms=604800000
+        $$T --bootstrap-server $$B --list
+
+  # ---------------------------------------------------------------- AWS emulator (S3 now; DynamoDB + SNS for the alert hot path)
+  # moto is a MOCK: fine for proving code paths, NOT for S3 consistency/throughput behaviour.
+  aws-emulator:
+    image: motoserver/moto:latest
+    ports: ["5555:5000"]   # host 5555: macOS AirPlay Receiver already owns 5000
+    environment:
+      MOTO_PORT: 5000
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://localhost:5000/moto-api/')\""]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  aws-init:
+    image: amazon/aws-cli:latest
+    depends_on:
+      aws-emulator: { condition: service_healthy }
+    environment:
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: eu-west-1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        E="--endpoint-url http://aws-emulator:5000"
+        aws $$E s3api create-bucket --bucket gtfsr-lake --create-bucket-configuration LocationConstraint=eu-west-1 || true
+        aws $$E s3 ls
+
+  # ---------------------------------------------------------------- Spark streaming queries
+  # One container per query = independent checkpoints, failures and restarts.
+  spark-raw-sink:
+    <<: *spark-job
+    command: ["/opt/spark/bin/spark-submit", "/app/src/gtfsrt/streaming/raw_sink.py"]
+  spark-route-aggregates:
+    <<: *spark-job
+    command: ["/opt/spark/bin/spark-submit", "/app/src/gtfsrt/streaming/route_aggregates.py"]
+  spark-delay-alerts:
+    <<: *spark-job
+    command: ["/opt/spark/bin/spark-submit", "/app/src/gtfsrt/streaming/delay_alerts.py"]
+  spark-alerts-sink:
+    <<: *spark-job
+    command: ["/opt/spark/bin/spark-submit", "/app/src/gtfsrt/streaming/alerts_sink.py"]
+
+volumes:
+  kafka-data:
+  ivy-cache:

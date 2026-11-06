@@ -1,0 +1,39 @@
+# RECONSTRUCTED copy of the docker-compose.yml that existed at the project root before 2026-11-06.
+#
+# Why this file exists: while building the rest of the pipeline I overwrote your original docker-compose.yml
+# without reading it first (the file wasn't in my view; the write tool reported "updated", not "created").
+# There was no git history to restore from, so this was rebuilt from the settings recorded on your old container
+# (`docker inspect gtfs-kafka`, project `live_gtfs_transport_ireland`, image apache/kafka:3.7.0).
+#
+# What is certain (read from the container): image, ports, listeners, node/cluster ids, quorum, replication factor.
+# What is NOT recoverable: how the two topics (vehicle_positions, trip_updates; 6 partitions, RF 1) were created -
+#   it was not in the container's environment, so it was probably a manual CLI step (see the commands at the bottom).
+#   Also unknown: exact YAML formatting, comments, and the volume/mount names.
+# Compare with your own copy on GitHub if you pushed it - that is the source of truth, not this file.
+#
+# Your running stack today uses the root docker-compose.yml (Kafka 3.8, listeners INTERNAL/EXTERNAL, plus an AWS
+# emulator and Spark jobs). Host clients still connect to localhost:9092 exactly as your ingestion/main.py does.
+
+services:
+  kafka:
+    image: apache/kafka:3.7.0
+    container_name: gtfs-kafka
+    ports:
+      - "9092:9092"
+    environment:
+      CLUSTER_ID: gtfs-local-cluster-1
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_LISTENERS: PLAINTEXT://:19092,CONTROLLER://:9093,PLAINTEXT_HOST://:9092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:19092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+
+# Topic creation, as described in your DECISIONS.md (probably run by hand against the running broker):
+#   docker exec gtfs-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
+#       --topic vehicle_positions --partitions 6 --replication-factor 1
+#   docker exec gtfs-kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --create \
+#       --topic trip_updates --partitions 6 --replication-factor 1

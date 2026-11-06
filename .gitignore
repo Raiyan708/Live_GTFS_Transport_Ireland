@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+data/
+checkpoints/
+*.egg-info/
+.DS_Store
+airflow/logs/
+.terraform/
+dist/
