@@ -108,8 +108,11 @@ def severity_label(tier: int) -> str:
 
 
 def active_alerts_table(items: list[dict], now_epoch: int) -> pd.DataFrame:
-    """Shape DynamoDB active_alerts items for display, worst first, with data age."""
-    cols = ["severity", "route", "trip", "delay_min", "since_update_min"]
+    """Shape DynamoDB active_alerts items for display, worst first.
+
+    `since_change_min` is minutes since the ALERT last changed state (started/escalated). It is NOT 'last time the trip
+    reported': a trip can stay late and keep reporting for an hour with no new alert event."""
+    cols = ["severity", "route", "trip", "delay_min", "since_change_min"]
     if not items:
         return pd.DataFrame(columns=cols)
     df = pd.DataFrame(items)
@@ -117,6 +120,6 @@ def active_alerts_table(items: list[dict], now_epoch: int) -> pd.DataFrame:
         severity=df["tier"].astype(int).map(severity_label),
         route=df["route_id"], trip=df["trip_id"],
         delay_min=(df["delay_seconds"].astype(float) / 60).round(1),
-        since_update_min=((now_epoch - df["event_time"].astype(float)) / 60).round(0).astype(int),
+        since_change_min=((now_epoch - df["event_time"].astype(float)) / 60).round(0).astype(int),
     )
     return df.sort_values("delay_min", ascending=False)[cols].reset_index(drop=True)

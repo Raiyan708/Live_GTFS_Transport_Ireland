@@ -10,3 +10,5 @@ checkpoints/
 airflow/logs/
 .terraform/
 dist/
+node_modules/
+*.tsbuildinfo

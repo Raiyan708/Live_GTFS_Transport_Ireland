@@ -1,6 +1,7 @@
 import pathlib
 import re
 import subprocess
+import sys
 import zipfile
 
 from gtfsrt.lambda_alerts.tables import ACTIVE_TABLE_SPEC, EVENTS_TABLE_SPEC
@@ -60,7 +61,7 @@ def test_lambda_package_imports_cleanly_without_the_rest_of_the_repo(tmp_path):
     subprocess.run(["bash", str(ROOT / "scripts/package_and_upload.sh"), "--build-only"], cwd=ROOT, check=True,
                    capture_output=True)
     code = "import sys; sys.path.insert(0, sys.argv[1]); import gtfsrt.lambda_alerts.handler as h; print(h.lambda_handler.__name__)"
-    out = subprocess.run([str(ROOT / ".venv/bin/python"), "-I", "-c", code, str(ROOT / "dist/lambda_alerts.zip")],
+    out = subprocess.run([sys.executable, "-I", "-c", code, str(ROOT / "dist/lambda_alerts.zip")],
                          cwd=tmp_path, capture_output=True, text=True)
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "lambda_handler"

@@ -96,12 +96,9 @@ def right_now():
         st.dataframe(table, hide_index=True, width="stretch", column_config={
             "severity": "Severity", "route": "Route", "trip": "Trip",
             "delay_min": st.column_config.NumberColumn("Delay (min)", format="%.1f"),
-            "since_update_min": st.column_config.NumberColumn("Last update (min ago)", format="%d",
-                                                               help="Large values mean the feed went quiet - the alert may be stale"),
+            "since_change_min": st.column_config.NumberColumn("Alert changed (min ago)", format="%d",
+                                                               help="Minutes since this alert last started or escalated. It does not mean the trip stopped reporting."),
         })
-        if (table["since_update_min"] > 15).any():
-            st.warning("⚠ Some alerts have not been updated for 15+ minutes: the feed may have stopped, "
-                       "so they could be stale (event-time expiry only fires when new data arrives).")
 
 
 right_now()

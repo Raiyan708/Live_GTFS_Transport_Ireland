@@ -15,20 +15,39 @@ DATA_SOURCE = os.getenv("DATA_SOURCE", "local")  # "local" | "snowflake"
 
 
 # --------------------------------------------------------------------------- hot path
+_active_table = None
+MAX_ALERT_PAGES = 50  # bounds the pagination loop: a misbehaving store must not trap a request thread forever
+
+
+def _table():
+    """One DynamoDB table handle for the process, with hard timeouts (a slow store fails fast instead of hanging a thread)."""
+    global _active_table
+    if _active_table is None:
+        import boto3
+        from botocore.config import Config
+
+        kwargs = {"endpoint_url": os.environ["AWS_ENDPOINT_URL"]} if os.getenv("AWS_ENDPOINT_URL") else {}
+        cfg = Config(connect_timeout=2, read_timeout=5, retries={"max_attempts": 0})
+        _active_table = boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION", "eu-west-1"), config=cfg, **kwargs).Table(
+            os.getenv("ACTIVE_TABLE", "gtfsr_active_alerts"))
+    return _active_table
+
+
 def active_alerts() -> list[dict]:
-    import boto3
     from boto3.dynamodb.conditions import Key
 
-    kwargs = {"endpoint_url": os.environ["AWS_ENDPOINT_URL"]} if os.getenv("AWS_ENDPOINT_URL") else {}
-    table = boto3.resource("dynamodb", region_name=os.getenv("AWS_REGION", "eu-west-1"), **kwargs).Table(
-        os.getenv("ACTIVE_TABLE", "gtfsr_active_alerts"))
+    table = _table()
     # GSI query (status = ACTIVE), not a table Scan: cost and latency stay flat as history grows.
-    resp = table.query(IndexName="status-index", KeyConditionExpression=Key("status").eq("ACTIVE"))
+    cond = Key("status").eq("ACTIVE")
+    resp = table.query(IndexName="status-index", KeyConditionExpression=cond)
     items = resp["Items"]
+    pages = 1
     while "LastEvaluatedKey" in resp:
-        resp = table.query(IndexName="status-index", KeyConditionExpression=Key("status").eq("ACTIVE"),
-                           ExclusiveStartKey=resp["LastEvaluatedKey"])
+        if pages >= MAX_ALERT_PAGES:
+            raise RuntimeError(f"active alerts exceeded {MAX_ALERT_PAGES} pages: refusing to keep paging")
+        resp = table.query(IndexName="status-index", KeyConditionExpression=cond, ExclusiveStartKey=resp["LastEvaluatedKey"])
         items += resp["Items"]
+        pages += 1
     return items
 
 

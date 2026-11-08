@@ -292,6 +292,105 @@ Not managed (by choice): the MSK cluster, the Spark runtime (EMR Serverless / EC
 
 ---
 
+## Phase 8 — First contact with the live feed, and the React control room
+
+### WHAT?
+(a) The first run of `src/gtfsrt/producer.py` against the real NTA API (2026-11-08, ~22 min, ~27.7k trip updates + a similar number of vehicle records), to replace assumptions made on simulator data. (b) Replace the Streamlit dashboard with a React + FastAPI "control room" (live map, animated, dark).
+
+### WHAT THE LIVE FEED CONTRADICTED
+| Assumption (simulator) | Reality (live) | Consequence |
+|---|---|---|
+| Route ids look like `46A` | NTA internal ids, e.g. `1 39A c a`, `10000 RED g a`; 268 distinct | Names need a GTFS static `routes.txt` join. **Built later the same day** (Phase 8b): all 224 live ids matched exactly |
+| The lag report would size the watermark | **Trip updates carry no per-trip timestamp**: `event_time` falls back to the feed header, so lag is 0 *by construction*, not by measurement | The report cannot validate the watermark for the alert path; it also means a stale trip delay cannot be detected |
+| ~30 events per poll | ~2,350 trip updates and ~890 vehicles per call | Volume is real; the 3,000-trip load test is now less speculative |
+| Coordinates are valid or exactly 0/0 | Some vehicles report ~`0.00004, -0.00002` | Exact-zero check missed them; now a bounds check on Ireland, counted on `/api/health` |
+| Bearing is available | Present for only ~35% of vehicles | No heading arrows on the map |
+| (my own mistake) producer ran in live mode | The first run was in **simulator** mode because `FEED_MODE=live` was not in `.env` | Caught by volume (90 vs ~2,350) and fake route names, not by trusting the log |
+
+Vehicle positions do carry real timestamps: lag p50 18 s, p90 100 s, p99 775 s, max 2,867 s (9% of records >2 min old). **Decision: `WATERMARK_DELAY` stays 2 minutes.** `delay_alerts` and `route_aggregates` read only trip updates; vehicle positions go only to the raw sink (no watermark, partitioned by arrival time). The staleness is a *display* concern, handled on the map ("last position X min ago").
+
+### WHY? (decisions)
+- **D8.1 React + FastAPI + Server-Sent Events, not Streamlit.** Streamlit re-runs the script per interaction and limits theming/animation; the requirement was a custom look with smooth interaction. SSE (not WebSocket) because data flows one way, `EventSource` reconnects by itself, and it passes plain HTTP proxies. The backend logic (`dashboard/views.py`, `sources.py`) is untouched; the old app is kept as a legacy view.
+- **D8.2 `VehicleBoard` is pure and in-memory, fed by a read-only Kafka tail (last 6 min) locally.** In AWS the same interface would be a DynamoDB "latest position" table written by a streaming job. **That table is not built** — this is the honest gap between the local demo and the AWS design.
+- **D8.3 The map glides vehicles between snapshots (6 s ease-out) but never extrapolates.** The feed refreshes every ~2 min; animating *reported* positions is honest, inventing positions between reports is not. A jump >3 km snaps instead of gliding across town; reduced-motion users get no animation.
+- **D8.4 Delay bands mirror the alert tiers (5/10/15 min), checked by a test that parses the TS source.** Colours are the dataviz skill's fixed status steps; the validator flagged **yellow vs orange as too close in hue (ΔE 13.6 < 15)**, so severity is never colour alone: every band has its own shape (○◆▲●), word and dot size. "Normal" is a quiet grey-blue, so the map is calm when things are fine. Unknown delay is a hollow ring so it never reads as "on time".
+- **D8.5 Third-party basemap (CARTO dark) loaded by the viewer's browser.** Free for development with attribution; requests reveal the viewport to the provider. Swappable via `VITE_MAP_STYLE`; falls back to plain dark if unreachable. Use a licensed provider for anything public.
+- **D8.6 Upgraded `maplibre-gl` 5→6 and `vitest` 3→5** after `npm audit` reported a critical XSS-sanitizer bypass (maplibre, runtime) and dev-tooling issues. Detail panels render feed strings as React text, never HTML.
+
+### RESULT?
+- 20 new Python tests (vehicle board, API incl. SSE, TS↔Python threshold parity) → 121 host tests; 14 web tests (bands, glide). **Mutation-tested:** 7 deliberate breaks of the board/API and 3 of the glide logic were all caught (the one survivor was a no-op control).
+- Found by *looking at it*: MapLibre 6's worker failed to load under Vite dev (fixed with `?worker&url`, which also keeps `vite build` working); a stat tile clipped at phone width; the opening camera cropped the island on phones (now fits bounds around the panels).
+- `npm audit`: 0 vulnerabilities after the upgrades.
+- **Unverified:** real-device frame rate (the preview pane throttles unfocused pages to ~5 fps, so it cannot measure this); SSE behind a proxy; accessibility audit beyond keyboard focus rings and shape+word encoding.
+
+### Phase 8b — Route names, and the hot path on live data (same day)
+
+**WHAT.** (1) Join route names. (2) Run `delay_alerts` + `alerts_sink` (Spark) and the Lambda stand-in on the real feed for the first time (replaying ~100k live trip updates from Kafka), and show the result in the control room.
+
+**Decisions (D8.7–D8.11), each driven by something the live data showed:**
+- **D8.7 Route names from `GTFS_Realtime.zip`** (102 MB, valid 2026-11-07 → 2027-11-07, CC BY 4.0, from transportforireland.ie; downloaded with the user's approval into `data/gtfs_static/`, gitignored). All 224 live route_ids matched a static `route_id` **exactly**, so it is a plain lookup. The zip is untrusted input: only `routes.txt`, `agency.txt`, `feed_info.txt` are read (never extracted), each size-capped. Attribution is shown in the UI.
+- **D8.8 `ALERT_EXPIRY_SECONDS` 1800 → 600**, from measurement: over 97,284 consecutive appearances of the same trip, 99.8% are in back-to-back snapshots and 99.95% miss at most 4. With 1800 s, 171 of 603 active alerts (28%) sat on trips that had already finished. After the change: 463 active, **0** silent beyond the limit (452 still reporting and late, 9 inside the 2–5 min hysteresis band, 2 waiting out the timeout).
+- **D8.9 Lambda tie-break bug (found on live data, 3 stuck alerts).** `expire()` stamps the trip's *last observed* time; the "only apply if strictly newer" guard rejected it when the alert began at that same observation, so the alert stayed ACTIVE forever. Fix: a *resolving* event may close the **same episode at the same timestamp** while the row is still ACTIVE; everything else keeps the strict rule so a resolved alert can never be reopened by a late redelivery. Reproduced in a failing test first; the episode guard is mutation-verified.
+- **D8.10 Alerts show the CURRENT delay.** The delay stored on an alert row is the delay *when the alert last changed*; a top-tier alert gets no further events, so a bus getting later kept its old number (seen: "104 min" beside a detail card saying "196 min"). The API overlays the latest delay from the vehicle board's trip-update table (66 of 467 alerts had drifted >5 min; e.g. 170 → 263). Alert *severity* still comes from the engine; only the displayed delay is live.
+- **D8.11 `since_update_min` → `since_change_min`** (dashboard views, the legacy Streamlit table and its test). The old name, and the Streamlit warning "feed may have stopped" built on it, read "alert unchanged for 15 min" as "feed silent", which is false for any healthy long-running alert. The warning is removed; a silent feed is detected from feed freshness.
+
+**Mistakes in my own analysis, kept here on purpose.** I first read the row's `event_time` as "last time the trip reported" and concluded that 548 of 603 alerts were stale; checking against the last time each trip actually appeared in Kafka showed most were healthy. The real defects were smaller and different (D8.8, D8.9). Separately, a zsh variable holding a multi-word command did not word-split, so my first attempt to delete the `gtfsr.delay_alerts` topic silently did nothing; I checked message counts before trusting it.
+
+**Observed, not fixed (needs investigation before anyone relies on it):**
+- Delays up to ~264 min exist in the feed (e.g. NV1 Gainstown–Dunville). Whether they are real or a schedule/data fault is unknown; the dashboard shows them as received.
+- ~59% of active alerts (192 of 472 at the time) have no vehicle in the vehicle feed. These are trips predicted late with no reporting vehicle (not started, or vehicle not reporting; Luas/rail may also be absent from the vehicle feed). The split was not broken down further. The UI labels them `NO VEHICLE` instead of faking a position.
+- "Changed N min ago" cannot exceed the age of my data (the producer started 16:28), so the oldest alerts show the replay start, not their true start.
+
+**Unverified:** `raw_sink`, `route_aggregates`, Glue and Snowflake have **not** been run on live data (only the hot path was); the Lambda is a local stand-in, not AWS Lambda; sustained throughput over hours is unknown (one ~100k-message replay worked).
+
+
+### Phase 8c — The cold path on live data, and the reliability analytics
+
+**WHAT.** Ran `raw_sink`, `route_aggregates` and the Glue curation on the real feed for the first time, then built the route-reliability view (ranked bars + route × hour heatmap + table twin) on top of the curated data.
+
+**Verification before building.** The Spark 5-minute route aggregates were recomputed independently from the raw Kafka topic (same filters, same de-duplication, same window arithmetic): **5,547 (window, route) rows across 21 windows, 0 differences** in observation count, average delay, maximum delay and late count, and no missing rows either way. The Glue job transformed 6,862 route windows and 2,085 alerts, in = out, and wrote its manifest.
+
+**Decisions (D8.12–D8.16):**
+- **D8.12 Single-flight cache + timeouts in front of every store the API reads.** *Incident:* with the Spark and Glue jobs sharing the single-threaded S3/DynamoDB emulator, my own dashboard API snowballed it: each open browser tab polled the alerts store every 8 s; when the store slowed, each query outlived the poll interval, the browser abandoned the request but the server kept running it, and every new poll added another in-flight query. The emulator sat at 100% CPU, a trivial request took 14–20 s, the Spark jobs sat idle waiting on it, and the Glue run stalled ~20 min. It recovered in seconds once the API was killed (it ignored a polite stop for the same reason: it waits for in-flight requests). *Fix:* `SingleFlightCache` (at most one load in flight; a fresh value is served without touching the store; callers during a refresh get the stale copy at once instead of queueing; failures are remembered for the TTL so a dead store is asked once per TTL, not once per request), a reused DynamoDB handle with 2 s connect / 5 s read timeouts and no retries, and a page cap on the pagination loop. *Check:* 40 concurrent alert polls now cost 2–3 DynamoDB calls instead of 40+. One mutation (removing the fast path for fresh values) survives: it is an equivalent mutant, because the same check runs again under the lock.
+- **D8.13 A route is ranked only with enough evidence: 100+ readings *and* 3+ trips in its busiest 5-minute window; thin heatmap cells (<20 readings) are masked, not coloured.** *Found on the live feed:* the top-ranked route (261) had 2 trips, one a **ghost**: a scheduled trip that never ran, whose delay grows exactly 1:1 with the clock (fitted slope 0.998) because it is compared against a timetable that keeps receding. Across the feed, 19 of 3,943 trips (0.5%) had a delay of 90+ min; of the 18 with enough points to fit, 10 had slope ≈ 1.0 and only 2 of those ever had a vehicle position. They explain just 1.7% of all late readings (system-wide, 19.1% of readings are 5+ min late), but on a 2-trip route one ghost decides the whole ranking. The rule is a statistical-evidence guard, not a removal of data. **Not solved:** ghost trips on busy routes still count, and the hot path still labels a ghost "CRITICAL". The right fix is a stalled-trip detector (delay slope ≈ 1 with no position progress) in the state machine; not built.
+- **D8.14 The alert panel reconciles itself against the live feed.** A stopped alert pipeline leaves rows ACTIVE forever and the UI would present them as live (it did: 583 alerts frozen for ~25 min). Each ACTIVE alert is checked against the trip's current delay: *unconfirmed* = the trip left the feed, or its delay is back under the 'off' threshold. Healthy baseline measured at 0.4% (2 of 463); with the pipeline stopped it was **58% (340 of 583)**; after restarting it fell to 1% (7 of 470) within ~6 minutes as the jobs caught up. The UI warns at ≥10% with ≥20 alerts, and says nothing when no live delays are loaded (an empty table means "feed not loaded", not "everything is wrong").
+- **D8.15 Charts follow the dataviz rules:** ranked bars in one hue (slot 1, dark `#3987e5`, 4 px rounded data end); heatmap in the single-hue sequential ramp with the bright end meaning "most", masked cells drawn differently from no-data cells (neither is a fake colour); a Table view as the accessible twin of every chart; tooltips with route, hour range, share and reading count; the heatmap always shows all 24 hours, and the header states how much time the data actually covers.
+- **D8.16 `route_aggregates` counts one reading per trip per feed snapshot, including trips with no vehicle yet** (predicted delays on scheduled trips). So "late share" is a share of *trip-snapshot readings*, not of vehicles or passengers. Unchanged, but now stated.
+
+**Things that went wrong, kept on purpose.** (1) I ran the Glue job through `| tail`, which hid a crashing exit status behind `0`; the real failure was `No module named 'boto3'` in the local Spark image (real Glue provides it) — fixed in the Dockerfile and rerun, exit 0. (2) A `pkill -f` pattern matched my own background shell, killing the Glue run. (3) My first diagnosis blamed the emulator and Spark; the evidence (open connections, request mix) pointed at my own API. (4) The first heatmap tooltip was clipped by the drawer's overflow; found by inspecting its bounding box, not by eye.
+
+**Unverified.** Snowflake still has never executed the load SQL; the serving data covers only ~2.2 hours (hours 16–18), so the heatmap says nothing about mornings or weekdays versus weekends; the S3 lake is an in-memory emulator, so it is lost if that container is recreated (Kafka's 24 h retention is the only backstop); ghost trips are described, not handled.
+
+
+### Phase 9 — Finishing: what is measured, the public demo, and the Snowflake kit
+
+**WHAT.** Fix what the live data showed was wrong with the *numbers*, make the dashboard understandable to someone who cannot run the stack, and prepare the one
+big unverified layer (Snowflake) so it can be proven in one command.
+
+**Decisions (D9.1 to D9.6):**
+- **D9.1 Exclude readings from trips that have not started.** Measured on 249k readings: **40.7%** are for trips whose scheduled start is still in the future (they appear a median 40 min, up to 2 h, early);
+  **88.6%** of those have delay exactly 0 and only 2.6% are late: placeholders, not measurements. Among trips that have started, **30.1%** are 5+ min late, versus the 19.3% I had been reporting. The rule is an
+  objective comparison of `event_time` with the scheduled start (`trip_start.py`, pure Python) mirrored in Spark (`only_started_trips`); a parity test runs both on the same inputs, including a summer (DST) date and a 25:10:00 GTFS time.
+  *My first idea was wrong:* I assumed a missing `vehicle_id` marks a placeholder; measuring first showed 56% of all late readings lack one, so that would have thrown away real data. The parity test also caught that the Spark image's Python 3.8 has no `zoneinfo` (backport added).
+  The route aggregates were replayed from Kafka with the rule on, and an independent recomputation applying the same rule through the pure function matched exactly (4,599 rows, 0 differences).
+- **D9.2 A STALLED flag for trips not progressing.** In `VehicleBoard`: over at least 8 min and 4 readings, the delay grew by at least 80% of the elapsed time and the trip is 5+ min late. Mutation testing found two gaps in my first
+  tests (minimum points, minimum delay); both closed. It is hot-path only: the cold path relies on the minimum-3-trips guard from D8.13. Limitation: "stalled" cannot tell a stuck bus from a trip that never started.
+- **D9.3 Alerts backed by a vehicle position are the default; predicted ones are a switch.** After recording the demo, the alert count sawtoothed (jumping ~100 every 30 minutes, at :11 and :41). Splitting by whether the trip has a vehicle: tracked alerts changed a median **0.4%** per step
+  (worst 6.4%); untracked ones a median 0.8% but **45.3%** in the worst step; only 45% of alerts are tracked. *I first misread this* (I thought the new alerts were the ones disappearing); the removed ones were older, still-reporting trips, 93% without a vehicle.
+  *Interpretation, not proven:* NTA's prediction for trips with no live vehicle appears to be re-baselined on a 30-minute rhythm. I observed the pattern; I did not observe the cause.
+- **D9.4 A public demo that replays a RECORDING, not a mock.** `scripts/build_demo_data.py` replays real Kafka events (36 frames, 17:01 to 18:29 UTC on 2026-11-08) through the production `VehicleBoard`, the alert state machine and `build_active_alerts`, so every frame has exactly the live API's shape.
+  9.4 MB raw, 1.2 MB gzipped. The React hooks are swapped for demo versions by one constant per page load, so components cannot drift between modes. A first-visit About panel states what the project is, what the data taught me, and what is **not** proven; the architecture diagram draws unverified parts dashed.
+  Licence: the feed is listed as CC BY 4.0 on data.gov.ie and in NTA's usage policy; the policy page I could read is on a staging subdomain and some catalogue mirrors say "not specified", so **the production developer-portal terms must be confirmed before the demo is published.** Attribution is shown.
+- **D9.5 Snowflake can be verified with only an account (no AWS).** `scripts/snowflake_verify.py` uses an internal stage and the production loader (the stage became a validated parameter), then compares the Snowflake views with the pandas twins (`dashboard/parity.py`: rows after de-duplication, totals, route count, top-10 order/share/counts, alert rows and episodes).
+  Reading the setup SQL against Snowflake's privilege rules found a **missing `USAGE` grant** that would have failed the first real run (regression test added). Parity mutation tests found two gaps (ties, reading counts), closed. Timestamps are exported as microseconds like the real Glue output. **Never executed on Snowflake.**
+- **D9.6 CI and a clean-clone check.** A fresh virtualenv built from `requirements.txt` alone ran the suite: the install was complete and exactly one test failed, because it hard-coded `.venv/bin/python`. Fixed (`sys.executable`). Two workflows: tests, and the Pages deployment of the demo.
+
+**Mistakes and corrections in this phase:** the vehicle-id placeholder idea (measured, rejected); the misread alert churn (re-analysed); a header overlap visible only in the full-size screenshot; an overclaim in the About text ("they never ran", corrected to "not progressing").
+
+**Unverified, plainly:** Snowflake and the Airflow DAG against real services; real AWS; delays against ground truth; the 30-minute re-baselining cause; behaviour over days (the recording is one evening).
+
+---
+
 ## What I would be asked in an interview (and where the answer is)
 1. *Why stateful streaming instead of a windowed filter?* — D0.3, D2.1
 2. *Is it exactly-once?* — No: at-least-once + idempotent sinks (D0.5, D3.2); I tested redelivery.

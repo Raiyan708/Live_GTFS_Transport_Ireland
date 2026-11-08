@@ -1,0 +1,11 @@
+{
+ "from": 1794157272,
+ "to": 1794162580,
+ "frames": 36,
+ "median_gap_s": 120,
+ "generated_at": 1794170324,
+ "source": "National Transport Authority (NTA) GTFS-Realtime, recorded from the live API",
+ "attribution": "Contains data from the National Transport Authority / Transport for Ireland, licensed CC BY 4.0",
+ "trip_updates_replayed": 138998,
+ "vehicle_events_replayed": 52791
+}

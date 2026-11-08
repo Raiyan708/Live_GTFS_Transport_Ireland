@@ -172,9 +172,10 @@ def main() -> None:  # pragma: no cover - exercised against a live broker
     import os
 
     try:  # pick up the project's .env (API key etc.) when python-dotenv is installed; values are never logged
-        from dotenv import load_dotenv
+        from dotenv import find_dotenv, load_dotenv
 
-        load_dotenv()
+        # Search upward from the folder you ran it in first, then from this file's location.
+        load_dotenv(find_dotenv(usecwd=True) or find_dotenv())
     except ImportError:
         pass
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")

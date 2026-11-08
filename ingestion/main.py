@@ -50,8 +50,8 @@ def main():
     producer = make_producer("localhost:9092")
 
     feeds = [
-        (vp_url, "vehicle_positions", vehicle_position_to_json),
-        (tu_url, "trip_updates", trip_update_to_json),
+        (vp_url, "gtfsr.vehicle_positions", vehicle_position_to_json),
+        (tu_url, "gtfsr.trip_updates", trip_update_to_json),
     ]
 
     try:

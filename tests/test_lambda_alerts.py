@@ -104,6 +104,34 @@ def test_recovery_resolves_active_alert_with_short_ttl(env):
     assert item["status"] == "RESOLVED" and int(item["ttl"]) == 5_000 + 3600
 
 
+def status_of(env, trip="20260101|T1"):
+    return env[1].get_item(Key={"trip_key": trip})["Item"]["status"]
+
+
+def test_expiry_stamped_with_the_same_time_as_the_alert_still_resolves_it(env):
+    """REAL BUG found on the live feed: a trip that first appeared late at its LAST observation is expired with
+    event_time == that observation's time. The 'strictly newer' guard rejected it, leaving the alert ACTIVE forever."""
+    p = make(env)
+    p.process_event(kafka_event(record(alert("s", "DELAY_STARTED", t=1000)),
+                                record(alert("x", "DELAY_EXPIRED", t=1000), offset=1)))
+    assert status_of(env) == "RESOLVED"
+
+
+def test_same_time_tie_does_not_let_an_old_start_reopen_a_resolved_alert(env):
+    p = make(env)
+    p.process_event(kafka_event(record(alert("s", "DELAY_STARTED", t=1000)),
+                                record(alert("x", "DELAY_EXPIRED", t=1000), offset=1)))
+    p.process_event(kafka_event(record(alert("s2", "DELAY_ESCALATED", t=1000, tier=1), offset=2)))  # late redelivery
+    assert status_of(env) == "RESOLVED"
+
+
+def test_same_time_resolve_for_a_different_episode_is_not_applied(env):
+    p = make(env)
+    p.process_event(kafka_event(record(alert("s", "DELAY_STARTED", t=1000, episode=2))))
+    p.process_event(kafka_event(record(alert("x", "DELAY_EXPIRED", t=1000, episode=1), offset=1)))  # belongs to an older episode
+    assert status_of(env) == "ACTIVE"
+
+
 def test_expired_is_recorded_and_resolves_but_does_not_notify(env):
     sns = SpySNS(); p = make(env, sns)
     p.process_event(kafka_event(record(alert("a1", t=1000)), record(alert("a4", "DELAY_EXPIRED", 4000), 1)))

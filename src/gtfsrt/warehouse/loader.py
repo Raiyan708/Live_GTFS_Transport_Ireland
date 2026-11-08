@@ -30,6 +30,16 @@ def validate_date(value: str) -> str:
     return value
 
 
+_STAGE_RE = re.compile(r"^@[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*){0,2}$")
+
+
+def validate_stage(stage: str) -> str:
+    """The stage name is interpolated into SQL, so it is allow-listed like the date (never free text)."""
+    if not _STAGE_RE.match(stage):
+        raise ValueError(f"invalid stage name: {stage!r}")
+    return stage
+
+
 @dataclass(frozen=True)
 class TableLoad:
     table: str  # RAW table name, also the folder name under serving/
@@ -75,8 +85,9 @@ def delete_sql(t: TableLoad, date: str) -> str:
     return f"DELETE FROM GTFSR.RAW.{t.table} WHERE {t.part_col} = '{date}'"
 
 
-def copy_sql(t: TableLoad, date: str) -> str:
+def copy_sql(t: TableLoad, date: str, stage: str = STAGE) -> str:
     validate_date(date)
+    validate_stage(stage)
     targets = ", ".join([c for c, _ in t.columns] + [t.part_col, "_SOURCE_FILE", "_SOURCE_ROW"])
     selects = ", ".join(
         [f"$1:{expr}" for _, expr in t.columns]
@@ -84,7 +95,7 @@ def copy_sql(t: TableLoad, date: str) -> str:
         + [f"TO_DATE(REGEXP_SUBSTR(METADATA$FILENAME, '{t.part_name}=([0-9-]+)', 1, 1, 'e', 1))",
            "METADATA$FILENAME", "METADATA$FILE_ROW_NUMBER"]
     )
-    folder = f"{STAGE}/{t.table.lower()}/{t.part_name}={date}/"
+    folder = f"{stage}/{t.table.lower()}/{t.part_name}={date}/"
     return (
         f"COPY INTO GTFSR.RAW.{t.table} ({targets}) "
         f"FROM (SELECT {selects} FROM {folder}) "
@@ -100,14 +111,17 @@ def count_sql(t: TableLoad, date: str) -> str:
     return f"SELECT COUNT(*) FROM GTFSR.RAW.{t.table} WHERE {t.part_col} = '{date}'"
 
 
-def load_partition(conn: Any, t: TableLoad, date: str, run_id: str) -> int:
-    """Run the transaction on one DB-API connection. Returns rows now present for that date."""
+def load_partition(conn: Any, t: TableLoad, date: str, run_id: str, stage: str = STAGE) -> int:
+    """Run the transaction on one DB-API connection. Returns rows now present for that date.
+
+    `stage` defaults to the S3-backed production stage; scripts/snowflake_verify.py passes an INTERNAL stage so the whole
+    load path can be tested with only a Snowflake account (no AWS)."""
     validate_date(date)
     cur = conn.cursor()
     try:
         cur.execute("BEGIN")
         cur.execute(delete_sql(t, date))
-        cur.execute(copy_sql(t, date))
+        cur.execute(copy_sql(t, date, stage))
         cur.execute(count_sql(t, date))
         rows = int(cur.fetchone()[0])
         cur.execute(

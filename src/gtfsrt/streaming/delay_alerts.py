@@ -26,7 +26,11 @@ from gtfsrt.streaming.common import (
 )
 
 CFG = AlertConfig.from_env()
-EXPIRY_MS = int(os.getenv("ALERT_EXPIRY_SECONDS", "1800")) * 1000  # silent this long -> trip is over
+# Silent this long -> the trip is over and its open alert is closed. 600 s = 5 feed snapshots. Measured on the live feed
+# (2026-11-08, 97k consecutive appearances of the same trip): 99.8% are in back-to-back snapshots and 99.95% miss at most 4,
+# so a trip silent for 5+ snapshots has almost certainly finished. The original 1800 s left ~28% of "active" alerts on
+# trips that were already over. A trip that vanishes longer and returns just starts a new episode.
+EXPIRY_MS = int(os.getenv("ALERT_EXPIRY_SECONDS", "600")) * 1000
 WATERMARK = os.getenv("WATERMARK_DELAY", "2 minutes")
 
 _ALERT_COLS = [f.name for f in ALERT_SCHEMA.fields]

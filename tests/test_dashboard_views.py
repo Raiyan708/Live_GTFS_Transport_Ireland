@@ -108,5 +108,5 @@ def test_active_alert_table_sorted_worst_first_with_age():
              {"tier": 2, "route_id": "B", "trip_id": "t2", "delay_seconds": 960, "event_time": 1000 - 120}]
     t = views.active_alerts_table(items, now_epoch=1060)
     assert list(t["route"]) == ["B", "A"] and list(t["delay_min"]) == [16.0, 6.0]
-    assert list(t["since_update_min"]) == [3, 1]
+    assert list(t["since_change_min"]) == [3, 1]
     assert views.active_alerts_table([], 0).empty

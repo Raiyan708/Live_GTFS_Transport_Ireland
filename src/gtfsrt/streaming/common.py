@@ -80,7 +80,8 @@ def checkpoint(name: str) -> str:
 
 
 def build_spark(app_name: str) -> SparkSession:
-    builder = SparkSession.builder.appName(app_name)
+    # UTC session time zone: with_scheduled_start() parses a service-day date and must not depend on the JVM's default zone.
+    builder = SparkSession.builder.appName(app_name).config("spark.sql.session.timeZone", "UTC")
     endpoint = os.getenv("S3_ENDPOINT_URL")
     if endpoint:
         # Emulator / MinIO-style endpoint: static keys + path-style addressing, no TLS.
@@ -121,6 +122,25 @@ def read_kafka(spark: SparkSession, topics: str) -> DataFrame:
         .option("maxOffsetsPerTrigger", os.getenv("MAX_OFFSETS_PER_TRIGGER", "50000"))
         .load()
     )
+
+
+def with_scheduled_start(df: DataFrame) -> DataFrame:
+    """Adds `scheduled_start_ts` (null when start_date/start_time cannot be parsed). Spark twin of trip_start.scheduled_start_epoch:
+    midnight of the service day in Europe/Dublin, as a UTC instant, plus the HH:MM:SS offset (hours may exceed 24)."""
+    parts = F.split(F.col("start_time"), ":")
+    valid = F.col("start_time").rlike(r"^\d{1,3}:\d{2}:\d{2}$") & F.col("start_date").rlike(r"^\d{8}$")
+    offset = parts.getItem(0).cast("int") * 3600 + parts.getItem(1).cast("int") * 60 + parts.getItem(2).cast("int")
+    midnight = F.to_utc_timestamp(F.to_timestamp(F.col("start_date"), "yyyyMMdd"), "Europe/Dublin")
+    start = (F.unix_timestamp(midnight) + offset).cast("timestamp")
+    return df.withColumn("scheduled_start_ts", F.when(valid, start))
+
+
+def only_started_trips(df: DataFrame) -> DataFrame:
+    """Keep readings from trips that have started (or whose start we cannot determine). Needs `event_ts`.
+    Readings for not-yet-started trips are ~89% timetable placeholders (delay 0): see trip_start.py."""
+    return (with_scheduled_start(df)
+            .where(F.col("scheduled_start_ts").isNull() | (F.col("event_ts") >= F.col("scheduled_start_ts")))
+            .drop("scheduled_start_ts"))
 
 
 def parse_trip_updates(kafka_df: DataFrame) -> DataFrame:

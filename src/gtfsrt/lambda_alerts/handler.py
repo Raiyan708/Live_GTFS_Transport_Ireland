@@ -113,11 +113,17 @@ class AlertProcessor:
     def _update_active(self, alert: dict) -> None:
         resolved = alert["alert_type"] in RESOLVING_TYPES
         ttl = int(self.now()) + (RESOLVED_TTL_SECONDS if resolved else EVENT_TTL_SECONDS)
+        # Only apply if newer than what we hold -> out-of-order delivery cannot roll state back.
+        condition = "attribute_not_exists(event_time) OR event_time < :et"
+        if resolved:
+            # ...with ONE exception: a trip whose alert began at its final observation is expired with that SAME
+            # timestamp (found on the live feed). A resolving event may close the SAME episode at the SAME time while
+            # it is still ACTIVE: an episode cannot end before it starts, and a resolved row never reopens.
+            condition += " OR (event_time = :et AND episode = :ep AND #s = :active)"
         try:
             self.active_table.update_item(
                 Key={"trip_key": alert["trip_key"]},
-                # Only apply if newer than what we hold -> out-of-order delivery cannot roll state back.
-                ConditionExpression="attribute_not_exists(event_time) OR event_time < :et",
+                ConditionExpression=condition,
                 UpdateExpression=(
                     "SET #s = :s, tier = :tier, delay_seconds = :d, route_id = :r, vehicle_id = :v, "
                     "trip_id = :t, episode = :ep, event_time = :et, alert_type = :at, alert_id = :aid, "
@@ -126,6 +132,7 @@ class AlertProcessor:
                 ExpressionAttributeNames={"#s": "status", "#ttl": "ttl"},
                 ExpressionAttributeValues={
                     ":s": "RESOLVED" if resolved else "ACTIVE",
+                    **({":active": "ACTIVE"} if resolved else {}),  # only referenced by the tie-break condition
                     ":tier": int(alert.get("tier") or 0),
                     ":d": int(alert.get("delay_seconds") or 0),
                     ":r": alert.get("route_id") or "unknown",
