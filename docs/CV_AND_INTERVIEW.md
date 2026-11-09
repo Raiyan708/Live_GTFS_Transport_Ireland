@@ -10,19 +10,20 @@ Everything below is something the repo can back up. Where a claim depends on som
 - Validated the pipeline against the live feed instead of synthetic data, and let the data drive the design: recomputed Spark aggregates independently from raw Kafka (**0 differences over 4,599 route-windows**), tuned alert expiry from 97,000 observed trip appearances (30 min to 10 min), and found that 40.7% of readings were placeholders for trips that had not started, which had been understating the true late share (19% vs 30%).
 - Found and fixed defects only real data exposed: alerts that never expired when expiry and start shared a timestamp, stale delay values on top-tier alerts, GPS fixes near (0,0), and a self-inflicted overload of a shared storage emulator (single-flight cache, client timeouts).
 - Built a React/TypeScript + MapLibre dashboard backed by a FastAPI/SSE service: animated live map, vehicle-backed alert list, route-reliability ranking and heatmap, with an honest data-quality layer (stalled-trip detection, stale-pipeline warning). Public demo replays real recorded data.
-- **259 automated tests** (Python, Spark, Airflow, TypeScript), mutation testing of the critical logic, CI, and a decision log recording every design choice, rejected alternative and unverified claim.
+- **267 automated tests** (Python, Spark, Airflow, TypeScript), mutation testing of the critical logic, CI, and a decision log recording every design choice, rejected alternative and unverified claim.
 
 Shorter (4 lines): bullets 1, 2, 4 and the tests line.
 
 **Add after you complete these:**
-- *After the Snowflake run passes:* "Verified a Snowflake load path (partition-replace COPY, views, data-quality SQL) against pandas implementations of the same metrics."
+- *What you can say today (no Snowflake account needed):* "Warehouse view SQL (Snowflake dialect) verified against pandas implementations of the same metrics on a second SQL engine (DuckDB, via sqlglot), with mutation testing of the SQL."
+- *Only after a real Snowflake run passes:* "Verified the Snowflake load path (partition-replace COPY, views, data-quality SQL) on Snowflake."
 - *Only if you deploy to real AWS:* "Deployed with Terraform to AWS". Until then say "Terraform-defined" and "ran on a local AWS emulator". Do not say "deployed".
 
 ## 2. What not to claim (yet)
 | Do not say | Because | How to earn it |
 |---|---|---|
 | "Deployed on AWS" / "production" | The AWS services ran on a local emulator; Terraform validates but was never applied | `terraform apply` on a real account, or keep the wording above |
-| "Snowflake data warehouse" as a verified layer | Never executed against Snowflake | Run `scripts/snowflake_verify.py` (30 min) |
+| "Snowflake data warehouse" / "ran on Snowflake" | The SQL has never been accepted by Snowflake; only its view logic was checked (DuckDB) | Run `scripts/snowflake_verify.py` (30 min, needs a trial account; a card-free trial may or may not be available to you) |
 | "Orchestrated by Airflow" as a verified layer | The DAG is tested in a container, not run against real services | After Snowflake passes, point the DAG at the same account |
 | Throughput / latency numbers | None were measured under load | A load test; until then use the measured data volumes only |
 | "Exactly-once" | It is at-least-once plus idempotency, on purpose | Keep the honest wording; interviewers like it |

@@ -12,8 +12,9 @@ altair>=5
 fastapi>=0.110             # dashboard/api.py: JSON + SSE for the React front end in web/
 uvicorn>=0.29
 httpx>=0.27                # FastAPI TestClient
-snowflake-connector-python>=3.10   # only needed for DATA_SOURCE=snowflake
+snowflake-connector-python>=3.10,<5   # DATA_SOURCE=snowflake + scripts/snowflake_verify.py. <5: v5 needs protobuf<7, which breaks gtfs-realtime-bindings (needs >=7.34)
 # tests
 pytest>=8.0
 moto[dynamodb,sns]>=5.0
 sqlglot>=25
+duckdb>=1.0              # tests/test_views_duckdb.py: runs the Snowflake view SQL (translated by sqlglot) on a second SQL engine

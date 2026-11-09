@@ -9,7 +9,7 @@ export const FACTS: { big: string; text: string }[] = [
   { big: "45% → 0.4%", text: "Alerts for trips with no vehicle flipped in bulk (up to 45% in one step); alerts backed by a vehicle position changed 0.4% per step. The default view shows only the stable ones." },
   { big: "10 of 18", text: "extreme delays (90+ min) have a delay that grows exactly 1:1 with the clock: those trips are not progressing (never started, or stuck). They are flagged STALLED instead of looking like ordinary critical delays." },
   { big: "99.8%", text: "of trips appear in back-to-back feed snapshots, so alerts now expire after 10 minutes of silence (it was 30). Chosen from the data, not guessed." },
-  { big: "259 tests", text: "across the alert state machine, Lambda, Spark transforms, the API and the UI; the risky parts were also mutation-tested (break the code on purpose, confirm a test fails)." },
+  { big: "267 tests", text: "across the alert state machine, Lambda, Spark transforms, the API and the UI; the risky parts were also mutation-tested (break the code on purpose, confirm a test fails)." },
 ];
 
 export const BUGS_FOUND = [
@@ -20,7 +20,7 @@ export const BUGS_FOUND = [
 ];
 
 export const LIMITS = [
-  "Snowflake and the Airflow DAG are written and unit-tested but have not run against real services.",
+  "Snowflake and the Airflow DAG have not run against real services. The six warehouse views were checked for logic on a second SQL engine (DuckDB) against pandas, but Snowflake itself has not accepted the SQL yet.",
   "AWS services run on a local emulator; the Terraform validates but has not been applied.",
   "The recording covers one evening. Peak-versus-off-peak patterns need days of data.",
   "Delays are NTA's numbers, sampled every 2 minutes (one API call per minute is allowed). I have not compared them with ground truth.",

@@ -53,7 +53,7 @@ the AWS services run on a local emulator and the Terraform has been validated, n
   **mutation testing** (break the code on purpose, confirm a test fails). That caught real gaps in the tests themselves.
 - **Honest data work:** every limitation is written down next to the number it affects, including what is *not* proven.
 - **Delivery semantics:** at-least-once plus idempotent sinks (deterministic alert ids, conditional writes, partition-replace loads), not a claimed "exactly once".
-- **259 automated tests** (204 Python, 29 web, 13 Spark in a container, 13 Airflow in a container), CI on every push, a clean-clone install check.
+- **267 automated tests** (212 Python, 29 web, 13 Spark in a container, 13 Airflow in a container), CI on every push, a clean-clone install check.
 
 ## Run it locally (no AWS or Snowflake account needed)
 Needs Docker. Python is only used on the host for the producer, Lambda runner, tests and dashboard.
@@ -117,11 +117,13 @@ cd web && npm run dev            # then open http://localhost:5173/?demo=1
 
 ### Snowflake, for real, with only a trial account
 `docs/SNOWFLAKE_RUNBOOK.md` and `scripts/snowflake_verify.py`: create the objects, load through an internal stage with the production COPY, run the DQ SQL, and compare the
-Snowflake views with the pandas twins. **Until you run it, the Snowflake SQL has never executed.** `--dry-run` previews everything without connecting.
+Snowflake views with the pandas twins. **Until you run it, the Snowflake SQL has never executed on Snowflake.** `--dry-run` previews everything without connecting.
+What *has* been checked without an account: `tests/test_views_duckdb.py` translates the six warehouse views to DuckDB with sqlglot and compares them with the pandas twins on engineered data
+(replayed duplicates, rank ties, minute-boundary rounding); 7 deliberate breakages of the SQL were all caught. That proves the views' *logic*, not that Snowflake accepts the SQL, the grants, COPY or stages.
 
-## Tests (259)
+## Tests (267)
 ```bash
-./.venv/bin/pytest -q              # 204 — state machine, decoding, Lambda (moto), DQ (SQLite), Snowflake SQL, dashboard views + API, packaging
+./.venv/bin/pytest -q              # 212 — state machine, decoding, Lambda (moto), DQ (SQLite), Snowflake SQL, dashboard views + API, packaging
 (cd web && npm test)               # 29 — delay bands, position gliding, route naming, reliability colour scale
 ./scripts/run_spark_tests.sh       # 11 — Glue transforms, in the Spark container (host has no Java)
 ./scripts/run_airflow_tests.sh     # 13 — the DAG, in an Airflow 2.10 image
@@ -152,7 +154,7 @@ Use **`src/gtfsrt/producer.py`** for this, not `ingestion/main.py`: the Spark jo
 | `.github/workflows/` | CI (`tests.yml`) and the GitHub Pages demo deployment (`deploy-demo.yml`) |
 
 ## Status: verified vs not
-- **Verified by running:** producer → Kafka; all four Spark jobs; crash/restart recovery; replay from Kafka; Lambda against real Kafka + emulated DynamoDB; Glue job; dashboard (Streamlit light + dark; React control room against the live feed); all 259 tests (all four suites were run on 2026-11-08).
+- **Verified by running:** producer → Kafka; all four Spark jobs; crash/restart recovery; replay from Kafka; Lambda against real Kafka + emulated DynamoDB; Glue job; dashboard (Streamlit light + dark; React control room against the live feed); all 267 tests (all four suites were run on 2026-11-08).
 - **Verified statically only:** Snowflake SQL (parsed, not executed), Terraform (`validate`, not applied), Airflow DAG (imports and graph, not run against real AWS/Snowflake).
 - **Not tested:** real S3 behaviour (moto ≠ S3), Glue 4.0's Spark 3.3 (local is 3.5), Snowflake and the Airflow DAG on live data (the producer, both Spark paths, the Lambda stand-in, Glue and the dashboard have run on it; the lake is an in-memory emulator), MSK, IAM policies.
 - **Known limitation:** if the feed goes completely silent, active alerts never expire (event-time timeouts need the watermark to advance). The dashboard shows data age; the Airflow freshness gate fails the DAG.
